@@ -3,7 +3,7 @@
   "displayName": "Markdowns In Graph",
   "description": "在 VS Code 中复刻 Obsidian 的关系图谱：双链解析、力导向布局、缩放/平移/拖拽、点击跳转、实时更新、筛选搜索与节点聚焦。",
   "version": "1.1.0",
-  "publisher": "local-dev",
+  "publisher": "L1r0gn",
   "license": "MIT",
   "engines": {
     "vscode": "^1.75.0"
