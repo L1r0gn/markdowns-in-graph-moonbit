@@ -1,0 +1,216 @@
+{
+  "name": "markdowns-in-graph",
+  "displayName": "Markdowns In Graph",
+  "description": "在 VS Code 中复刻 Obsidian 的关系图谱：双链解析、力导向布局、缩放/平移/拖拽、点击跳转、实时更新、筛选搜索与节点聚焦。",
+  "version": "1.0.0",
+  "publisher": "local-dev",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "graph",
+    "obsidian",
+    "markdown",
+    "wikilink",
+    "backlink",
+    "knowledge graph",
+    "双链",
+    "关系图谱"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:markdownsInGraph.show",
+    "onCommand:markdownsInGraph.showLocal",
+    "onCommand:markdownsInGraph.refresh"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "markdownsInGraph.show",
+        "title": "打开全局关系图谱",
+        "category": "关系图谱",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "markdownsInGraph.showLocal",
+        "title": "打开当前笔记的局部图谱",
+        "category": "关系图谱",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "markdownsInGraph.refresh",
+        "title": "重新扫描并刷新图谱",
+        "category": "关系图谱",
+        "icon": "$(refresh)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "markdownsInGraph.show",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g"
+      },
+      {
+        "command": "markdownsInGraph.showLocal",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorLangId == markdown"
+      },
+      {
+        "command": "markdownsInGraph.refresh",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "markdownsInGraph.panelVisible"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "markdownsInGraph.showLocal",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@9"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "markdownsInGraph.showLocal",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@9"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "markdownsInGraph.show",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "markdownsInGraph.showLocal",
+          "when": "editorLangId == markdown"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Markdowns In Graph",
+      "properties": {
+        "markdownsInGraph.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/out/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.workbuddy/**"
+          ],
+          "markdownDescription": "扫描时忽略的 glob 规则（相对于工作区根目录）。"
+        },
+        "markdownsInGraph.maxFileSizeKb": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 1,
+          "markdownDescription": "单个 Markdown 文件参与解析的最大体积（KB），超过该值只作为节点显示、不解析其中的链接。"
+        },
+        "markdownsInGraph.showOrphans": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "显示没有任何连接的孤立笔记。"
+        },
+        "markdownsInGraph.showUnresolved": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "显示未解析的双链（目标文件不存在时生成虚线幽灵节点）。"
+        },
+        "markdownsInGraph.showAttachments": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "在图中显示图片、PDF 等附件节点。"
+        },
+        "markdownsInGraph.colorMode": {
+          "type": "string",
+          "enum": [
+            "folder",
+            "degree",
+            "tag",
+            "single"
+          ],
+          "enumDescriptions": [
+            "按所在文件夹着色",
+            "按连接数量着色",
+            "按首个标签着色",
+            "所有节点使用同一颜色"
+          ],
+          "default": "folder",
+          "markdownDescription": "节点着色的依据。"
+        },
+        "markdownsInGraph.nodeScale": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 2,
+          "markdownDescription": "节点半径缩放系数。"
+        },
+        "markdownsInGraph.linkDistance": {
+          "type": "number",
+          "default": 90,
+          "minimum": 20,
+          "maximum": 240,
+          "markdownDescription": "连线（弹簧）的理想长度。数值越大，图谱越松散。"
+        },
+        "markdownsInGraph.repulsion": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.1,
+          "maximum": 4,
+          "markdownDescription": "节点之间的排斥力强度。"
+        },
+        "markdownsInGraph.labelThreshold": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0.1,
+          "maximum": 2,
+          "markdownDescription": "缩放比例低于该值时隐藏普通节点的文字标签（高连接度节点始终显示）。"
+        },
+        "markdownsInGraph.localDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 5,
+          "markdownDescription": "局部图谱命令默认展开的层级深度。"
+        },
+        "markdownsInGraph.openInNewTab": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "点击节点时在侧边新标签页打开，而不是复用当前标签页。"
+        },
+        "markdownsInGraph.realtimeUpdate": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "监听文件变化并实时更新图谱。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc -p ./ --noEmit",
+    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links",
+    "install:vsix": "npm run package && code --install-extension markdowns-in-graph-1.0.0.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.5"
+  }
+}
