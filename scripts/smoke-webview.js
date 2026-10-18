@@ -24,7 +24,22 @@ const { window } = dom;
 
 const messages = [];
 const errors = [];
+const labelCalls = [];
 let ctxCalls = 0;
+let sharedCtx = null;
+let failed = 0;
+
+function check(name, ok, detail) {
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`);
+  if (!ok) failed++;
+}
+
+function alphaOf(style) {
+  const text = String(style || '');
+  if (text.indexOf('rgba') !== 0) return 1;
+  const m = /,\s*([\d.]+)\s*\)$/.exec(text);
+  return m ? parseFloat(m[1]) : 1;
+}
 
 function makeCtx() {
   const target = {};
@@ -32,13 +47,19 @@ function makeCtx() {
     get(t, prop) {
       if (prop in t) return t[prop];
       if (prop === 'canvas') return window.document.querySelector('#graph');
+      if (prop === 'fillText') {
+        return function (text) { labelCalls.push({ text: String(text), style: String(t.fillStyle) }); };
+      }
       return function () { ctxCalls++; };
     },
     set(t, prop, value) { t[prop] = value; return true; }
   });
 }
 
-window.HTMLCanvasElement.prototype.getContext = function () { return makeCtx(); };
+window.HTMLCanvasElement.prototype.getContext = function () {
+  if (!sharedCtx) sharedCtx = makeCtx();
+  return sharedCtx;
+};
 window.HTMLCanvasElement.prototype.getBoundingClientRect = function () {
   return { width: 1280, height: 820, left: 0, top: 0, right: 1280, bottom: 820, x: 0, y: 0 };
 };
@@ -159,6 +180,8 @@ function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
   canvas.dispatchEvent(new window.MouseEvent('pointerdown', { button: 0, clientX: 200, clientY: 200, bubbles: true }));
   canvas.dispatchEvent(new window.MouseEvent('pointermove', { button: 0, clientX: 260, clientY: 250, bubbles: true }));
   canvas.dispatchEvent(new window.MouseEvent('pointerup', { button: 0, clientX: 260, clientY: 250, bubbles: true }));
+  await wait(600); // 等待缩放动画收敛
+
   const tip = window.document.querySelector('#tip');
   let hitPoint = null;
   for (let y = 8; y < 800 && !hitPoint; y += 6) {
@@ -168,11 +191,41 @@ function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
     }
   }
   console.log('悬停命中节点:', !!hitPoint, hitPoint || '');
+  check('悬停得到节点', !!hitPoint);
+
+  // 悬停时：相连节点标签保持明亮，未相连节点标签同步变暗
   if (hitPoint) {
-    canvas.dispatchEvent(new window.MouseEvent('contextmenu', { clientX: hitPoint.x, clientY: hitPoint.y, bubbles: true, cancelable: true }));
+    const tipTitle = window.document.querySelector('#tip .tip-title').textContent;
+    labelCalls.length = 0;
+    window.dispatchEvent(new window.Event('resize'));
+    await wait(250);
+    const alphas = labelCalls.map((c) => alphaOf(c.style));
+    const bright = alphas.filter((a) => a >= 0.8).length;
+    const dim = alphas.filter((a) => a <= 0.4).length;
+    const hovered = labelCalls
+      .filter((c) => tipTitle.indexOf(c.text) === 0 || c.text.indexOf(tipTitle.slice(0, 6)) === 0)
+      .map((c) => alphaOf(c.style));
+    console.log(`悬停「${tipTitle}」标签透明度: 高亮 ${bright} / 变暗 ${dim} / 共 ${alphas.length}`);
+    check('存在高亮标签', bright > 0);
+    check('未连接节点的标签已变暗', dim > 0);
+    check('悬停节点自身标签保持高亮', hovered.length === 0 || hovered.some((a) => a >= 0.8));
+  }
+
+  // 重新扫描一次，避免布局仍在微小漂移导致点到空白处
+  let menuPoint = null;
+  for (let y = 8; y < 800 && !menuPoint; y += 6) {
+    for (let x = 8; x < 1280; x += 6) {
+      canvas.dispatchEvent(new window.MouseEvent('pointermove', { clientX: x, clientY: y, bubbles: true }));
+      if (!tip.classList.contains('hidden')) { menuPoint = { x, y }; break; }
+    }
+  }
+  if (menuPoint) {
+    canvas.dispatchEvent(new window.MouseEvent('contextmenu', { clientX: menuPoint.x, clientY: menuPoint.y, bubbles: true, cancelable: true }));
   }
   await wait(120);
-  console.log('右键菜单项:', window.document.querySelectorAll('#menu .menu-item').length);
+  const menuCount = window.document.querySelectorAll('#menu .menu-item').length;
+  console.log('右键菜单项:', menuCount);
+  check('右键菜单可用', menuCount >= 5);
 
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
 
@@ -192,5 +245,7 @@ function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
   console.log('postMessage 类型:', Array.from(new Set(messages.map((m) => m.type))).join(','));
   console.log('运行时错误:', errors.length ? errors : '无');
-  process.exit(errors.length ? 1 : 0);
+  if (errors.length) failed += errors.length;
+  console.log(failed ? `\n共 ${failed} 项失败` : '\n全部检查通过');
+  process.exit(failed ? 1 : 0);
 })();

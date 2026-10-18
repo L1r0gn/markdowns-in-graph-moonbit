@@ -23,7 +23,7 @@
     dark: {
       link: 'rgba(152,165,192,0.22)',
       linkHl: 'rgba(140,180,255,0.62)',
-      label: 'rgba(228,233,244,0.9)',
+      label: '#e4e9f4',
       labelDim: 'rgba(228,233,244,0.14)',
       halo: 'rgba(16,18,22,0.82)',
       dot: 'rgba(255,255,255,0.045)',
@@ -36,7 +36,7 @@
     light: {
       link: 'rgba(88,102,128,0.22)',
       linkHl: 'rgba(40,100,200,0.55)',
-      label: 'rgba(32,38,50,0.88)',
+      label: '#202632',
       labelDim: 'rgba(32,38,50,0.14)',
       halo: 'rgba(255,255,255,0.88)',
       dot: 'rgba(0,0,0,0.05)',
@@ -930,7 +930,14 @@
         ctx.lineWidth = 3;
         ctx.strokeStyle = th.halo;
         ctx.strokeText(text, sx, ly);
-        ctx.fillStyle = hasQuery && !state.matches.has(n.id) ? th.labelDim : withAlpha(th.label, Math.min(1, alpha * 0.95));
+        if (hasQuery && !state.matches.has(n.id)) {
+          ctx.fillStyle = th.labelDim;
+        } else if (focusId && !isNeighbor && n.id !== focusId) {
+          // 与焦点节点无连接：标签跟随节点一起淡出
+          ctx.fillStyle = withAlpha(th.label, 0.26);
+        } else {
+          ctx.fillStyle = withAlpha(th.label, 0.92);
+        }
         ctx.fillText(text, sx, ly);
       }
     }
