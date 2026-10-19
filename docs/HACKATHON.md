@@ -41,7 +41,7 @@ npm run compile
 npm run parity           # ✓ 12 个文件解析结果完全一致
 
 # 3. 基准
-npm run bench            # 建索引 ~4.7k 篇/秒；布局 1000 节点 ~815 帧/秒
+npm run bench            # 建索引 ~3.4k 篇/秒；布局 1000 节点 ~700–800 帧/秒
 
 # 4. 端到端：无头浏览器确认 Webview 真的用上了 wasm
 node scripts/preview.js
