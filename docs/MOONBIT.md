@@ -1,6 +1,7 @@
 # MoonBit 内核设计说明
 
-> 本文记录 v2.0 重构的动机、边界划分与工程细节，对应代码位于仓库 `core/`。
+> 本文记录 v2.0 内核重构与 v2.1 NoteQL 查询层的动机、边界划分与工程细节，
+> 对应代码位于仓库 `core/`。
 
 ---
 
@@ -41,9 +42,11 @@ v1.3 的插件里，一个 `.md` 文件从磁盘到画布要经过三次实现�
 │                        ┌───────────────────┐                             │
 │                        │  core.wasm        │  MoonBit 内核               │
 │                        │  （wasm-gc）      │  mdparse / vault / layout   │
+│                        │                   │  query（NoteQL）            │
 │                        └───────────────────┘                             │
 │                                │                                         │
 │  graphPanel.ts ◄───────────────┘  postMessage(GraphData)                 │
+│  queryPanel.ts ◄───────────────┘  noteql_run(source) -> JSON             │
 └────────────────────────────────┬─────────────────────────────────────────┘
                                  │ Webview（Chromium）
                                  ▼
@@ -72,6 +75,8 @@ v1.3 的插件里，一个 `.md` 文件从磁盘到画布要经过三次实现�
 | `vault` | `core/vault/graph.mbt` | 构图：节点/边/度数/统计、幽灵节点、未引用附件剔除、边去重 |
 | `vault` | `core/vault/json.mbt` | 手写 JSON 序列化（避免通用序列化的中间对象） |
 | `layout` | `core/layout/sim.mbt` | Barnes-Hut 四叉树、弹簧力、向心力、阻尼积分、网格碰撞消解 |
+| `query` | `core/query/*.mbt` | NoteQL：词法/语法、语义检查、关系物化、图递归（BFS/SCC）、聚合、依赖感知缓存 |
+| 根包 | `core/abi.mbt` | 宿主 ABI（解析/构图/布局/NoteQL）、全局 vault 与查询缓存 |
 | 根包 | `core/abi.mbt` | `#export_name` 导出的宿主接口与全局状态 |
 
 ### 解析器要点
@@ -111,7 +116,7 @@ v1.3 的插件里，一个 `.md` 文件从磁盘到画布要经过三次实现�
 | 函数 | 签名 | 说明 |
 | --- | --- | --- |
 | `core_version` | `() -> String` | 内核版本 |
-| `core_selftest` | `() -> String` | 跑一遍最小闭环，返回 `ok:2`；加载器用它确认运行时真的可用 |
+| `core_selftest` | `() -> String` | 跑一遍解析/构图/查询最小闭环，返回 `ok:2`；加载器用它确认运行时真的可用 |
 | `parse_markdown_json` | `(text) -> String` | 调试/契约测试用：返回 `{links,tags}` |
 | `vault_reset` | `() -> ()` | 清空索引 |
 | `vault_add_note` | `(rel, size, mtime, text)` | 写入笔记（内部完成解析） |
@@ -121,10 +126,31 @@ v1.3 的插件里，一个 `.md` 文件从磁盘到画布要经过三次实现�
 | `vault_build_graph` | `(maxTags, generatedAt, rootName) -> String` | 构图，返回 `GraphData` JSON |
 | `vault_folders` | `() -> String` | `[{path,count}]` |
 | `vault_resolve` | `(fromRel, target) -> String` | 诊断：解析链接目标 |
+| `noteql_run` | `(source, useCache) -> String` | 执行 NoteQL，返回 `{ok, columns, rows, cached, dependencies, ...}` |
+| `noteql_relations` | `() -> String` | 内置关系与列清单 |
+| `noteql_stats` | `() -> String` | 缓存命中/未命中、变更序列 |
+| `noteql_reset_cache` | `() -> ()` | 清空查询缓存 |
+| `noteql_selftest` | `() -> String` | 查询引擎自检（使用独立临时 vault） |
 | `layout_reset` / `layout_add_node` / `layout_add_link` / `layout_seed` | | 组装布局图 |
 | `layout_pin` / `layout_unpin` / `layout_move` | `(i, x, y)` | 固定 / 解除 / 拖动 |
 | `layout_step` | `(alpha, rest, repulsion)` | 推进一帧 |
 | `layout_x` / `layout_y` / `layout_count` | | 读取坐标 |
+
+### 4.1 NoteQL 查询层
+
+`core/query` 不改变解析/构图/布局的语义，只在 `vault` 之上新增四件事：
+
+1. **关系物化**：`note` / `file` / `link` / `tag` / `unresolved` / `ambiguous` /
+   `orphan` / `cycle`；
+2. **图函数**：`distance` / `reachable` / `in_cycle` / `indegree` / `outdegree` /
+   `degree`；BFS 按源节点缓存，环检测用 Kosaraju SCC；
+3. **查询语言**：`SELECT ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT`，
+   支持聚合、别名替换、分组一致性检查；
+4. **依赖感知缓存**：`vault` 用 5 条独立变更序列记录 `note` / `link` / `tag` /
+   `name` / `file` 的变化，查询保存依赖快照，只重算受影响的查询。
+
+只有 `note` / `orphan` / `cycle` 或图函数才构建 `GraphIndex`；只查 `tag` 的查询
+不会为整张图付出成本。这部分设计见 `docs/NOTEQL.md`。
 
 ---
 
@@ -165,7 +191,7 @@ const instance = new WebAssembly.Instance(module, { _: strings });
 ```bash
 npm run core:build     # wasm-gc + js，产物复制到 media/
 npm run core:check     # 只做类型检查
-npm run core:test      # 33 个单元测试
+npm run core:test      # 41 个单元测试（含 NoteQL）
 ```
 
 `scripts/build-core.js` 会依次执行：
@@ -204,11 +230,14 @@ Linux / macOS / CI 上不需要这一步。
 
 | 层次 | 命令 | 覆盖内容 |
 | --- | --- | --- |
-| 单元测试 | `npm run core:test` | 路径运算、链接/标签解析、Frontmatter、围栏、解析规则、构图、布局收敛与可复现性（33 个用例） |
+| 单元测试 | `npm run core:test` | 路径运算、链接/标签解析、Frontmatter、围栏、解析规则、构图、布局收敛与可复现性、NoteQL 语法/聚合/图递归/缓存失效（41 个用例） |
 | 一致性回归 | `npm run parity` | 用重构前的 TS 解析器逐文件比对 `target/kind/line/tags`，任何差异都会失败 |
-| 宿主集成 | `node scripts/test-indexer.js` | 桩 `vscode` 模块跑完整索引流程 |
+| 缓存差分 | `npm run core:test` | 缓存结果与「同最终内容新建 vault 后重算」逐单元格比较 |
+| 宿主集成 | `node scripts/test-indexer.js` | 桩 `vscode` 模块跑完整索引流程与 NoteQL 查询 |
+| JS/CLI 冒烟 | `node scripts/noteql-test.mjs` | wasm/mjs 加载、缓存命中/失效、CLI JSON/SARIF |
 | Webview 冒烟 | `npm run smoke` | 无头浏览器加载预览页，断言 `window.__graphCore === 'wasm'`、无异常、canvas 有绘制 |
-| 基准 | `npm run bench` | 解析吞吐、端到端建索引、1000 节点布局帧耗时 |
+| 查询面板预览 | `node scripts/query-preview.js` | 静态预览 + mock `vscode` API；可用 `scripts/shot.js` 截图 |
+| 基准 | `npm run bench` / `node scripts/noteql-bench.mjs` | 解析吞吐、建索引、布局帧耗时、查询冷/热/增量 |
 
 一致性回归是最关键的一道闸门：它保证这次重构**没有改变任何图谱语义**，
 只是把实现换了语言。
@@ -217,13 +246,24 @@ Linux / macOS / CI 上不需要这一步。
 
 ## 8. 基准与解读
 
-1200 篇合成笔记 / 2.7 MB / 96000 条链接（本机 Node 22 + Windows）：
+1200 篇合成笔记 / 2.7 MB / 96000 条链接（本机 Node 24 + Windows）：
 
 | 阶段 | 耗时 |
 | --- | --- |
 | 端到端建索引（解析 + 解析链接 + 构图，全在 MoonBit 内） | ~0.3 s（约 3.4k 篇/秒） |
 | 单篇解析（含 JSON 序列化） | ~0.1 ms |
 | 布局 1000 节点 | 1.2–1.4 ms/帧（约 700–800 帧/秒） |
+
+NoteQL 基准（Node 24 / Windows，JS 后端，1200 篇 / 约 48,000 条链接）：
+
+| 场景 | 耗时 |
+| --- | --- |
+| 端到端建索引 | ~198 ms |
+| `tag` 冷查询 / 热缓存 | ~8.3 ms / ~0.22 ms |
+| `indegree` 图查询（冷） | ~160 ms |
+| 递归 `distance`（冷） | ~84 ms |
+| 只改链接后 · `tag` 查询 | ~0.22 ms（命中） |
+| 改标签后 · `tag` 查询 | ~2.5 ms（重算） |
 
 关于「解析比 v1.3 的 TS 慢一点」：V8 的字符串是 UTF-16 且切片是 O(1) 的结构共享，
 而 wasm 侧需要 `String -> Array[Char]` 与逐字符 UTF-8 编码。用 Rust 的 `regex` 去对比
@@ -232,9 +272,10 @@ V8 的正则引擎，结论也常常是反过来的——这不是语言好坏�
 MoonBit 版真正的收益在别处：
 
 - **确定性**：相同输入 ⇒ 相同布局、相同图谱，可在 CI 里做快照；
-- **可测性**：33 个单元测试直接跑在 wasm-gc 后端上；
-- **类型安全**：解析结果的形状由编译器保证；
+- **可测性**：41 个单元测试直接跑在 wasm-gc 后端上；
+- **类型安全**：解析结果与查询 AST 的形状由编译器保证；
 - **复用**：内核可以同时跑在扩展宿主、Webview、CLI 与浏览器里；
+- **查询余量**：只查 `tag` 的冷查询约 8 ms，热缓存约 0.22 ms；图查询仍有优化空间；
 - **布局余量**：1000 节点仍有 800+ fps 的算力空间，为后续加入分组、聚类、路径高亮留出预算。
 
 ---
@@ -244,4 +285,7 @@ MoonBit 版真正的收益在别处：
 - 只索引工作区第一个文件夹（多根工作区待支持）；
 - Frontmatter 只提取标签，不解析其中的链接；
 - 内核是单实例全局状态，同一进程内不支持并行索引多个工作区；
-- 计划：把搜索/过滤（`rebuild()` 里的 BFS 与筛选）也搬进内核，让 Webview 只做绘制。
+- NoteQL 只支持单关系 `FROM`，没有 `JOIN` / 子查询 / `UNION`；
+- 查询缓存是结果级依赖失效，不是逐元组 delta 维护；递归视图在依赖变化时整体重算；
+- 不校验标题/块锚点是否存在；
+- 计划：多关系查询、按连通分量的增量重算、把搜索结果接到链接修复的编辑计划器。

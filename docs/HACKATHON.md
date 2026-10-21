@@ -2,14 +2,26 @@
 
 ## 一句话
 
-**Markdowns In Graph** 是一个 VS Code 的关系图谱扩展；本期把它的计算内核
-（Markdown 双链解析、链接解析、图谱构建、力导向布局）用 **MoonBit** 重写并编译为
-**WebAssembly**，在真实的开发者工具里跑起来。
+**Markdowns In Graph v2.1 不只是把解析和布局搬进 MoonBit，而是在它们之上新增了一层
+NoteQL：一个面向 Markdown 知识图的查询与增量复用引擎。**
 
-- 扩展本体：已在 Marketplace 生态内使用的 1.3.1 版本（本次基线）
-- 本期新增：`core/`（MoonBit 源码 2262 行 + 测试 384 行）+ 宿主适配层 + 基准脚本
-- 演示：打开任意 Markdown 笔记库 → `Ctrl+Alt+G` → 图谱实时渲染，
-  布局由 `core.wasm` 逐帧计算
+- 底座：`mdparse` / `vault` / `layout` —— 双链解析、链接解析、构图、力导向布局
+- 新增贡献：`core/query` —— 查询语言、关系模型、图递归、依赖感知缓存、CLI 与 VS Code 查询面板
+- 同一份 MoonBit 源码产出 wasm-gc 与 js；同一套查询语义跑在扩展宿主、Webview 与 CI
+
+---
+
+## 对上一版驳回意见的回应
+
+上一版的叙事把「解析 + 布局」当成主贡献，评审指出这些已是成熟件，剩余部分不足以
+构成独立项目的核心深度。v2.1 的改法是**换重心，而不是补功能**：
+
+| 上一版被质疑的点 | v2.1 的处理 |
+| --- | --- |
+| 解析、布局是成熟件 | 明确降为底座；不再把它们当作主要创新点 |
+| 路径查找、构图、宿主适配不足以构成深度 | 新增查询语言、图递归、增量缓存与 CI 接口；这些不依赖解析器/布局库 |
+| 未建立与现有 MoonBit 库的复用/差异 | 底座保持可替换；`core/query` 是新的独立包，解决的是「派生查询与失效」而不是「文本/几何」 |
+| 缺少可验证的核心 | 41 个 MoonBit 测试；缓存与全量重算的差分测试；1200 篇笔记基准；CLI SARIF 输出 |
 
 ---
 
@@ -17,12 +29,12 @@
 
 | 验收标准 | 本项目如何满足 | 可检查的位置 |
 | --- | --- | --- |
-| **MoonBit 为主** | 解析器、索引、链接解析、构图、布局、JSON 序列化全部是 MoonBit；TypeScript 只剩 VS Code API 调用与 Canvas 绘制 | `core/**/*.mbt`（2262 行）vs `src/*.ts`（适配层，其中 `indexer.ts` 由 667 行降到 429 行） |
-| **仓库公开** | 建议推送至 GitHub 公共仓库，保留本期 5 个提交 | `git log --oneline` |
-| **能够运行** | `npm run core:build` → `npm run compile` → F5；或直接安装 `markdowns-in-graph-2.0.0.vsix`（wasm 产物已入库，无需装 MoonBit） | `README.md`「安装」「开发与调试」 |
-| **工作有效** | 已有项目，但内核是本期从头实现的实质新增：`core/` 全部为新增文件，`src/indexer.ts` 由 667 行降到 429 行，且不再含任何解析、索引与图算法 | `git show --stat baa7b62` |
-| **开源合规** | MIT；`core/` 亦为 MIT；参考来源在 `docs/MOONBIT.md` 注明（Obsidian 的链接解析规则、d3-force 的 Barnes-Hut 思路） | `LICENSE`、`core/moon.mod` |
-| **AI 可解释** | 架构取舍、性能数据、已知限制全部写进 `docs/MOONBIT.md`；关键决策在下面「设计取舍」里逐条说明 | `docs/MOONBIT.md` |
+| **MoonBit 为主** | 解析、索引、构图、布局、查询语言、求值器、增量缓存全部是 MoonBit；TS 只负责 VS Code API、Webview 渲染与 CLI 转发 | `core/**/*.mbt`；`src/queryPanel.ts` 只有消息与 DOM |
+| **仓库公开** | GitHub 公共仓库；保留完整提交历史 | `git log --oneline` |
+| **能够运行** | `npm run core:build` → `npm run compile` → F5；或安装 2.1.0 VSIX（wasm/mjs 产物已入库） | `README.md`「安装」 |
+| **工作有效** | 新增 `core/query` 包；查询可在 VS Code、CLI、CI 中运行；缓存与重算结果有差分测试 | `core/query/**`、`scripts/noteql*.mjs` |
+| **开源合规** | MIT；未引入与许可证不兼容的第三方运行时 | `LICENSE`、`core/moon.mod` |
+| **AI 可解释** | 语言语义、增量模型、性能数据、限制全部写入 `docs/NOTEQL.md` 与本节 | `docs/NOTEQL.md` |
 
 ---
 
@@ -32,64 +44,102 @@
 git clone <repo> && cd markdowns-in-graph
 npm install
 
-# 1. 内核：单元测试
-#    需要 moon 工具链（https://www.moonbitlang.com/download）
-npm run core:test        # 33 passed
+# 1. 内核测试（需要 moon 工具链，见 docs/MOONBIT.md）
+npm run core:test        # 41 passed
 
-# 2. 一致性：旧 TS 解析器 ⇄ MoonBit 内核
+# 2. 编译 TypeScript
 npm run compile
-npm run parity           # ✓ 12 个文件解析结果完全一致
 
-# 3. 基准
-npm run bench            # 建索引 ~3.4k 篇/秒；布局 1000 节点 ~700–800 帧/秒
+# 3. 查询 CLI：跑仓库自带的 10 条查询
+node scripts/noteql.mjs --vault example-vault --queries queries
 
-# 4. 端到端：无头浏览器确认 Webview 真的用上了 wasm
-node scripts/preview.js
-npx http-server . -p 8765 &        # 或任意静态服务器
-node scripts/smoke-core.js http://127.0.0.1:8765/scripts/preview.html
-# 引擎： wasm / ✓ Webview 正在使用 MoonBit 内核
+# 4. JS/CLI 冒烟测试
+npm run noteql:test
 
-# 5. 在 VS Code 里跑
-#    用 VS Code 打开项目，F5，然后在开发宿主里打开 example-vault
+# 5. 基准（1200 篇合成笔记 / 约 48,000 条链接）
+node scripts/noteql-bench.mjs 1200
+
+# 6. 在 VS Code 里跑
+#    打开项目 F5 → 在开发宿主打开 example-vault → Ctrl+Alt+Q
 ```
 
 ---
 
 ## 技术亮点
 
-### 1. 双后端、双宿主
+### 1. 新的派生层：关系 + 图函数
 
-同一份 MoonBit 源码配置了 `wasm-gc` 与 `js` 两种链接产物：
+NoteQL 把知识库拆成 8 个内置关系：
 
-- **扩展宿主（Node）**：`media/core.wasm` 通过 `WebAssembly.Module/Instance` 加载，
-  负责解析与构图；
-- **Webview（Chromium）**：同一个 wasm 负责逐帧力导向布局；
-- 若运行时缺少 WasmGC / js-string 内建，自动退回 `media/core.mjs`，接口完全一致。
-
-### 2. 字符串零拷贝过河
-
-MoonBit 的 `String` 在 wasm-gc 里是 GC 数组，和 JS 字符串不兼容。
-开启 `use-js-builtin-string` 后，编译器把 `String` 编译为 JS 字符串，
-并用 `wasm:js-string` 内建指令操作它；模块里的字符串字面量以
-`_` 模块的 `externref` 全局导入，宿主用一个 `Proxy` 把「变量名」当作值提供：
-
-```ts
-const strings = new Proxy({}, { get: (_t, key) => (typeof key === 'symbol' ? undefined : key) });
-const module = new WebAssembly.Module(bytes, { builtins: ['js-string'], importedStringConstants: '_' });
-const instance = new WebAssembly.Instance(module, { _: strings });
+```text
+note  file  link  tag  unresolved  ambiguous  orphan  cycle
 ```
 
-于是宿主与内核之间只有 `String` 与数值两种值，没有手写内存布局、没有 free。
+并提供 `distance` / `reachable` / `in_cycle` / `indegree` / `outdegree` 等图函数。
+查询可以直接问：
 
-### 3. 布局接口走数值，不过 JSON
+```sql
+-- 从首页出发不可达的笔记
+SELECT n.path, distance('首页.md', n.path) AS hops
+FROM note n
+WHERE distance('首页.md', n.path) < 0
+ORDER BY n.path;
 
-Webview 每帧只调用 `layout_step(alpha, rest, repulsion)` 与 `2N` 次
-`layout_x/layout_y`，避免把上千个坐标序列化成字符串再解析。
+-- 带 #draft 但没有任何入链的笔记
+SELECT n.path, indegree(n.path) AS refs
+FROM note n
+WHERE n.tags CONTAINS 'draft' AND indegree(n.path) = 0;
+```
 
-### 4. 确定性布局
+`distance` 用 BFS，结果按源节点缓存；`cycle` 用 Kosaraju SCC。
+这些都不是解析器或布局库能提供的能力。
 
-四叉树用扁平对象池（每帧只重置计数器，不新建对象），随机扰动来自固定种子的 LCG。
-**同样的输入永远得到同样的布局** —— 这让截图回归与单元测试成为可能。
+### 2. 依赖感知的增量缓存
+
+`vault` 维护 5 条独立的变更序列：
+
+```text
+note  link  tag  name  file
+```
+
+查询记录自己依赖的关系，例如：
+
+- `tag` 依赖 `tag + name`
+- `link` 依赖 `link + name`
+- `orphan` / `cycle` / 图函数依赖 `link + name`
+
+于是：
+
+- 只改链接、标签不变 → `tag` 查询命中缓存；
+- 只改标签、链接不变 → `link` 查询命中缓存；
+- 改文件名 → 依赖图的查询失效，因为同名链接的归属可能变了。
+
+这不是完整的 Datalog delta 维护，但它是可解释、可测试的增量复用；
+`core/query/query_test.mbt` 会把缓存结果与全量重算逐单元格比较。
+
+### 3. 按需建图
+
+只有 `note` / `orphan` / `cycle` 或图函数才构建 `GraphIndex`。
+只查 `tag`、`file`、`link` 的查询不会为整张图付出成本。
+在 1200 篇笔记的语料上，`tag` 冷查询约 8 ms，而完整图查询约 160 ms。
+
+### 4. 双宿主 + CLI/CI
+
+- 扩展宿主：查询在 Node 侧执行，结果通过 `postMessage` 交给查询面板；
+- Webview：图谱布局继续逐帧调用 wasm；
+- CLI：同一份 JS 后端直接读工作区，输出 table / JSON / CSV / SARIF；
+- `--fail-on-results` 可把断链、孤立笔记等体检变成 CI 闸门。
+
+### 5. 查询语义检查
+
+拒绝而不是静默算错：
+
+- 未知关系/列；
+- 聚合函数出现在 `WHERE`；
+- 分组查询里出现未分组的列；
+- 聚合嵌套；
+- `DISTINCT` 用在非聚合函数上；
+- `GROUP BY` 任意表达式（2.1 明确不支持）。
 
 ---
 
@@ -97,29 +147,70 @@ Webview 每帧只调用 `layout_step(alpha, rest, repulsion)` 与 `2N` 次
 
 | 决策 | 理由 | 代价 |
 | --- | --- | --- |
-| 只迁移计算内核，UI 保持 TS | 交互层与 VS Code API 强耦合，迁移收益低、风险高 | 仓库里仍有约 1000 行 JS 负责绘制 |
-| 保留旧 TS 解析器在 `src/legacy/` | 作为一致性回归与基准的参照物，证明语义未变 | 多一份「死代码」 |
-| 手写 JSON 序列化 | 通用序列化会为每个对象建 Map，48000 条边时开销超过算法本身 | 需要自己处理转义 |
-| wasm 解析比 V8 正则略慢 | V8 的字符串是 UTF-16 且切片 O(1)，wasm 侧要字符化与 UTF-8 编码 | 见 `docs/MOONBIT.md` §8 的解读 |
-| 布局与解析放同一个模块 | 一次加载、两处使用，减少产物数量 | 模块体积 85 KB |
+| 单关系 `FROM`，不做 `JOIN` | 2.1 先把关系、图函数、增量语义做扎实；JOIN 会拖长实现与验证 | 复杂查询需要拆成多条 |
+| SQL 风格表面 + 图函数 | 对熟悉 SQL 的用户友好；不需要先学 Cypher | 不是标准 SQL，`HAVING` 别名等语义由我们定义 |
+| 解析/布局保留原实现 | 它们是稳定底座，已有测试与基准；换掉不会增加本项目深度 | 仓库中仍有旧模块 |
+| 增量做结果级依赖失效 | 可在有限周期内做对、测清楚 | 不是逐元组 delta；递归视图在依赖变化时整体重算 |
+| 查询在扩展宿主执行 | 避免 Webview 与宿主各维护一份索引 | 查询面板不能离线单独运行 |
+| 缓存上限 64 条 | 防止长时间会话无限增长 | 大量不同查询会互相驱逐 |
+
+---
+
+## 基准
+
+本机（Node 24 / Windows，JS 后端，1200 篇合成笔记 / 约 48,000 条链接）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 端到端建索引 | ~198 ms |
+| `tag` 过滤冷查询 | ~8.3 ms |
+| `tag` 过滤热缓存 | ~0.22 ms |
+| `indegree` 图查询冷 | ~160 ms |
+| 递归 `distance` 冷 | ~84 ms |
+| 只改链接后 · `tag` 查询 | ~0.22 ms（命中） |
+| 改标签后 · `tag` 查询 | ~2.5 ms（重算） |
+
+```bash
+node scripts/noteql-bench.mjs 1200
+```
+
+Wasm 与 JS 后端的查询结果一致，由 `noteql_selftest` 覆盖。
+
+---
+
+## 测试矩阵
+
+| 层次 | 命令 | 覆盖 |
+| --- | --- | --- |
+| MoonBit 单元测试 | `npm run core:test` | 路径、解析、构图、布局、查询语法、聚合、图递归、缓存失效、差分一致性（41 个） |
+| JS/CLI 冒烟 | `node scripts/noteql-test.mjs` | wasm/mjs 加载、查询、缓存、CLI JSON/SARIF |
+| 解析一致性 | `npm run parity` | 旧 TS 解析器 ⇄ MoonBit 内核 |
+| 索引器集成 | `node scripts/test-indexer.js` | 桩 `vscode` 下的扫描与查询 |
+| 界面预览 | `node scripts/query-preview.js` | 查询面板静态预览（mock `vscode` API） |
+| 基准 | `node scripts/noteql-bench.mjs` | 索引、冷/热查询、增量场景 |
+
+---
+
+## 与现有 MoonBit 库的关系
+
+- `mdparse` / `layout` 继续作为底座；本项目不把「双链解析」和「Barnes–Hut 布局」当作新贡献。
+- `core/query` 是新的包，解决的问题是**派生查询与增量复用**，与文本解析、几何布局没有重叠。
+- 如果未来社区有更成熟的 Markdown 解析库或布局库，可以替换底座而不改变 NoteQL 的语义；
+  查询层只依赖 `vault` 暴露的 `notes` / `resolve` / `candidates` / 变更序列。
 
 ---
 
 ## AI 使用说明
 
-本项目在 AI 辅助下完成，但目标、边界与质量门禁由作者掌握：
-
-- **由人决定**：内核边界的划分（哪些逻辑进 MoonBit）、ABI 形状（字符串 + 数值）、
-  失败时的降级策略、验收标准（一致性回归必须通过）。
-- **由人验证**：每一条 MoonBit 代码都由 `moon check` / `moon test` / `parity` /
-  冒烟测试验证；没有「写完就算」的模块。
-- **可追溯**：`docs/MOONBIT.md` 记录了每个设计取舍的原因，基准数据可复现
-  （`npm run bench`）。
+- **由人决定**：查询语言边界、关系模型、增量失效粒度、缓存策略、UI 交互；
+- **由人验证**：每个模块都经过 `moon check` / `moon test` / CLI 冒烟 / 预览页检查；
+- **可追溯**：设计、基准、限制写入 `docs/NOTEQL.md`；基准脚本可复现。
 
 ---
 
 ## 后续计划
 
-1. 把 Webview 的筛选、搜索与 BFS 局部图也搬进内核，让渲染层只负责绘制；
-2. 支持多根工作区（内核已经是多实例友好的结构，只差会话管理）；
-3. 把布局内核单独发布成 MoonBit 包，供其它可视化项目复用。
+1. 多关系 `JOIN` 与相关子查询；
+2. 递归查询按连通分量/脏分量做更细粒度的增量重算；
+3. 锚点与 Frontmatter 字段关系；
+4. 查询结果接到「批量修复链接」的编辑计划器（LinkSmith 方向）。
